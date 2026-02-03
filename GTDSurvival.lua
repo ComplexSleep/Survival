@@ -1,27 +1,34 @@
 --====================================================
--- SERVICES
+-- LOAD SAFETY
 --====================================================
 if not game:IsLoaded() then game.Loaded:Wait() end
 
+--====================================================
+-- SERVICES
+--====================================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+--====================================================
+-- UTIL
+--====================================================
 local function clamp(v, min, max)
 	if v < min then return min end
 	if v > max then return max end
 	return v
 end
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
-
-local LocalPlayer = Players.LocalPlayer
-local Camera = Workspace.CurrentCamera
-
 --====================================================
--- GARDEN TD TUNING (SAFE VALUES)
+-- GARDEN TD SAFE TUNING
 --====================================================
-local MAX_VERTICAL_OFFSET = 65
 local FOLLOW_DISTANCE = 26
 local SMOOTHNESS = 0.35
+local MAX_VERTICAL_OFFSET = 65
 local CLUSTER_COUNT = 3
 local CLUSTER_RADIUS = 4
 
@@ -36,11 +43,10 @@ local conn
 --====================================================
 -- UI SETUP
 --====================================================
-local screenGui = Instance.new("ScreenGui")
+local screenGui = Instance.new("ScreenGui", LocalPlayer:WaitForChild("PlayerGui"))
 screenGui.Name = "ShadowLinkUI_Optimized"
 screenGui.ResetOnSpawn = false
 screenGui.DisplayOrder = 999
-screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 local mainFrame = Instance.new("Frame", screenGui)
 mainFrame.Size = UDim2.new(0, 220, 0, 80)
@@ -58,8 +64,35 @@ toggleBtn.TextColor3 = Color3.new(1,1,1)
 toggleBtn.Font = Enum.Font.GothamBold
 Instance.new("UICorner", toggleBtn)
 
+local minBtn = Instance.new("TextButton", mainFrame)
+minBtn.Size = UDim2.new(0, 25, 0, 25)
+minBtn.Position = UDim2.new(1, -30, 0, 5)
+minBtn.BackgroundTransparency = 1
+minBtn.Text = "-"
+minBtn.TextColor3 = Color3.new(1,1,1)
+minBtn.TextSize = 25
+
+local openDot = Instance.new("TextButton", screenGui)
+openDot.Size = UDim2.new(0, 15, 0, 15)
+openDot.Position = UDim2.new(0, 15, 1, -30)
+openDot.BackgroundColor3 = Color3.fromRGB(0,255,150)
+openDot.Text = ""
+openDot.Visible = false
+openDot.ZIndex = 10
+Instance.new("UICorner", openDot)
+
+minBtn.MouseButton1Click:Connect(function()
+	mainFrame.Visible = false
+	openDot.Visible = true
+end)
+
+openDot.MouseButton1Click:Connect(function()
+	mainFrame.Visible = true
+	openDot.Visible = false
+end)
+
 --====================================================
--- UTILITIES
+-- GROUND SNAP
 --====================================================
 local function groundSnap(pos)
 	local params = RaycastParams.new()
@@ -78,6 +111,9 @@ local function groundSnap(pos)
 	return pos
 end
 
+--====================================================
+-- BUILD MODE DETECTION
+--====================================================
 local function isBuildMode()
 	local gui = LocalPlayer:FindFirstChild("PlayerGui")
 	if not gui then return false end
@@ -91,7 +127,7 @@ local function isBuildMode()
 end
 
 --====================================================
--- DECOY LOGIC
+-- DECOY
 --====================================================
 local function createDecoy(hrp)
 	decoyPart = Instance.new("Part")
@@ -103,18 +139,22 @@ local function createDecoy(hrp)
 	decoyPart.Parent = Workspace
 
 	bodyPos = Instance.new("BodyPosition")
-	bodyPos.MaxForce = Vector3.new(5e4, 5e4, 5e4)
-	bodyPos.P = 3500
-	bodyPos.D = 500
+	bodyPos.MaxForce = Vector3.new(1e5,1e5,1e5)
+	bodyPos.P = 4000
+	bodyPos.D = 600
 	bodyPos.Position = decoyPart.Position
 	bodyPos.Parent = decoyPart
 
-	clusterParts = {}
 	for i = 1, CLUSTER_COUNT do
 		local p = Instance.new("Part")
 		p.Size = Vector3.new(2,2,2)
 		p.Transparency = 1
 		p.CanCollide = false
+		p.CFrame = decoyPart.CFrame * CFrame.new(
+			math.random(-CLUSTER_RADIUS, CLUSTER_RADIUS),
+			0,
+			math.random(-CLUSTER_RADIUS, CLUSTER_RADIUS)
+		)
 		p.Parent = decoyPart
 		table.insert(clusterParts, p)
 	end
@@ -128,12 +168,38 @@ local function destroyDecoy()
 end
 
 --====================================================
--- TOGGLE LOGIC
+-- EMERGENCY UNSTUCK (HOTKEY: H)
+--====================================================
+local function emergencyUnstuck()
+	local char = LocalPlayer.Character
+	if not char then return end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+
+	local safePos = groundSnap(hrp.Position)
+
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	hrp.AssemblyAngularVelocity = Vector3.zero
+	hrp.CFrame = CFrame.new(safePos)
+
+	if decoyPart and bodyPos then
+		bodyPos.Position = safePos
+	end
+end
+
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == Enum.KeyCode.H then
+		emergencyUnstuck()
+	end
+end)
+
+--====================================================
+-- TOGGLE PILOT
 --====================================================
 local function togglePilot()
 	local char = LocalPlayer.Character
 	if not char then return end
-
 	local hrp = char:FindFirstChild("HumanoidRootPart")
 	local hum = char:FindFirstChild("Humanoid")
 	if not hrp or not hum then return end
@@ -143,63 +209,52 @@ local function togglePilot()
 	if isActive then
 		createDecoy(hrp)
 
-		for _, d in ipairs(char:GetDescendants()) do
-			if d:IsA("BasePart") and d ~= hrp then
-				d.Transparency = 1
-				d.CanCollide = false
+		for _, p in ipairs(char:GetDescendants()) do
+			if p:IsA("BasePart") then
+				p.Transparency = 1
+				p.CanCollide = false
 			end
 		end
 
 		conn = RunService.Heartbeat:Connect(function()
 			if not decoyPart or not bodyPos then return end
 
+			-- cancel physics
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			hrp.AssemblyAngularVelocity = Vector3.zero
+
 			if isBuildMode() then
 				hum:Move(Vector3.zero, false)
 			end
 
-			local target = hrp.Position + hum.MoveDirection * FOLLOW_DISTANCE
-			local yOffset = clamp(
-				target.Y - hrp.Position.Y,
-				-MAX_VERTICAL_OFFSET,
-				MAX_VERTICAL_OFFSET
-			)
-
-			target = Vector3.new(target.X, hrp.Position.Y + yOffset, target.Z)
+			local moveDir = hum.MoveDirection
+			local target = hrp.Position + moveDir * FOLLOW_DISTANCE
 			target = groundSnap(target)
 
 			bodyPos.Position = bodyPos.Position:Lerp(target, SMOOTHNESS)
 
-			for i, p in ipairs(clusterParts) do
-				p.CFrame = decoyPart.CFrame * CFrame.new(
-					math.sin(i * 2) * CLUSTER_RADIUS,
-					0,
-					math.cos(i * 2) * CLUSTER_RADIUS
-				)
-			end
-
-			hrp.CFrame = CFrame.new(
-				bodyPos.Position + Vector3.new(0, MAX_VERTICAL_OFFSET, 0)
-			)
+			-- keep real player grounded
+			local grounded = groundSnap(hrp.Position)
+			hrp.CFrame = CFrame.new(grounded, grounded + hrp.CFrame.LookVector)
 
 			Camera.CameraSubject = hum
 		end)
 
 		toggleBtn.Text = "PILOT ACTIVE"
-		toggleBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 50)
-
+		toggleBtn.BackgroundColor3 = Color3.fromRGB(0,200,50)
 	else
 		destroyDecoy()
 
-		for _, d in ipairs(char:GetDescendants()) do
-			if d:IsA("BasePart") then
-				d.Transparency = 0
-				d.CanCollide = true
+		for _, p in ipairs(char:GetDescendants()) do
+			if p:IsA("BasePart") then
+				p.Transparency = 0
+				p.CanCollide = true
 			end
 		end
 
 		Camera.CameraSubject = hum
 		toggleBtn.Text = "START PILOT"
-		toggleBtn.BackgroundColor3 = Color3.fromRGB(20, 60, 20)
+		toggleBtn.BackgroundColor3 = Color3.fromRGB(20,60,20)
 	end
 end
 
@@ -208,8 +263,8 @@ toggleBtn.MouseButton1Click:Connect(togglePilot)
 --====================================================
 -- RESPAWN SAFETY
 --====================================================
-LocalPlayer.CharacterAdded:Connect(function()
+LocalPlayer.CharacterAdded:Connect(function(char)
 	isActive = false
 	destroyDecoy()
-	Camera.CameraSubject = LocalPlayer.Character:WaitForChild("Humanoid")
+	Camera.CameraSubject = char:WaitForChild("Humanoid")
 end)
