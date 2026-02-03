@@ -182,7 +182,7 @@ local function togglePilot()
 
 			-- Freeze player while building
 			if isBuildMode() then
-				hum:Move(Vector3.zero)
+				hum:Move(Vector3.new(0, 0, 0), false)
 			end
 
 			local moveDir = hum.MoveDirection
